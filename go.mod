@@ -1,6 +1,6 @@
 module github.com/WuKongIM/WuKongIM
 
-go 1.18
+go 1.20
 
 require (
 	github.com/RussellLuo/timingwheel v0.0.0-20220218152713-54845bda3108

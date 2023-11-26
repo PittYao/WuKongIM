@@ -210,7 +210,7 @@ func (p *Processor) processAuth(conn wknet.Conn, connectPacket *wkproto.ConnectP
 		hasServerVersion = true
 	}
 
-	p.s.Debug("Auth Success", zap.Any("conn", conn))
+	p.s.Debug("Auth Success", zap.Any("conn", conn), zap.Uint8("protoVersion", connectPacket.Version), zap.Bool("hasServerVersion", hasServerVersion))
 	connack := &wkproto.ConnackPacket{
 		Salt:          aesIV,
 		ServerKey:     dhServerPublicKeyEnc,
@@ -365,12 +365,14 @@ func (p *Processor) prcocessChannelMessages(conn wknet.Conn, channelID string, c
 	}
 	err = p.storeChannelMessagesIfNeed(conn.UID(), messages) // only have messageSeq after message save
 	if err != nil {
+		p.Error("store channel messages err", zap.Error(err))
 		return respSendackPacketsWithRecvFnc(messages, wkproto.ReasonSystemError), err
 	}
 	//########## message store to queue ##########
 	if p.s.opts.WebhookOn() {
 		err = p.storeChannelMessagesToNotifyQueue(messages)
 		if err != nil {
+			p.Error("store channel messages to notify queue err", zap.Error(err))
 			return respSendackPacketsWithRecvFnc(messages, wkproto.ReasonSystemError), err
 		}
 	}
@@ -378,6 +380,7 @@ func (p *Processor) prcocessChannelMessages(conn wknet.Conn, channelID string, c
 	//########## message put to channel ##########
 	err = channel.Put(messages, nil, conn.UID(), wkproto.DeviceFlag(conn.DeviceFlag()), conn.DeviceID())
 	if err != nil {
+		p.Error("put message to channel err", zap.Error(err))
 		return respSendackPacketsWithRecvFnc(messages, wkproto.ReasonSystemError), err
 	}
 
@@ -477,7 +480,7 @@ func (p *Processor) storeChannelMessagesToNotifyQueue(messages []*Message) error
 	}
 	storeMessages := make([]wkstore.Message, 0, len(messages))
 	for _, m := range messages {
-		if m.StreamIng() { // 流消息不做通知（只通知开始和结束）
+		if m.StreamIng() || (m.NoPersist && m.SyncOnce) { // 流消息不做通知（只通知开始和结束）,不存储的消息也不通知
 			continue
 		}
 		storeMessages = append(storeMessages, m)
@@ -531,7 +534,6 @@ func (p *Processor) sendPacketIsVail(sendPacket *wkproto.SendPacket, c wknet.Con
 
 // #################### subscribe ####################
 func (p *Processor) processSubs(conn wknet.Conn, subPackets []*wkproto.SubPacket) {
-	fmt.Println("subPackets--->", len(subPackets))
 	for _, subPacket := range subPackets {
 		p.processSub(conn, subPacket)
 	}
@@ -620,6 +622,7 @@ func (p *Processor) processRecvacks(conn wknet.Conn, acks []*wkproto.RecvackPack
 	for _, ack := range acks {
 		if !ack.NoPersist {
 			// 完成消息（移除重试队列里的消息）
+			p.Debug("移除重试队列里的消息！", zap.Uint32("messageSeq", ack.MessageSeq), zap.String("uid", conn.UID()), zap.Int64("clientID", conn.ID()), zap.Uint8("deviceFlag", conn.DeviceFlag()), zap.String("deviceID", conn.DeviceID()), zap.Int64("messageID", ack.MessageID))
 			err := p.s.retryQueue.finishMessage(conn.ID(), ack.MessageID)
 			if err != nil {
 				p.Warn("移除重试队列里的消息失败！", zap.Error(err), zap.Uint32("messageSeq", ack.MessageSeq), zap.String("uid", conn.UID()), zap.Int64("clientID", conn.ID()), zap.Uint8("deviceFlag", conn.DeviceFlag()), zap.String("deviceID", conn.DeviceID()), zap.Int64("messageID", ack.MessageID))

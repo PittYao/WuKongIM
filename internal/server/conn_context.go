@@ -33,13 +33,13 @@ type connContext struct {
 }
 
 func newConnContext(s *Server) *connContext {
-
-	return &connContext{
+	c := &connContext{
 		s:               s,
 		frameCacheLock:  sync.RWMutex{},
 		Log:             wklog.NewWKLog("connContext"),
 		subscriberInfos: make(map[string]*wkstore.SubscribeInfo),
 	}
+	return c
 }
 
 func (c *connContext) putFrame(frame wkproto.Frame) {
