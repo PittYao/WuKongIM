@@ -5,9 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 
 	"go.uber.org/atomic"
+	"go.uber.org/zap"
 
 	"github.com/RussellLuo/timingwheel"
 	"github.com/WuKongIM/WuKongIM/internal/monitor"
@@ -52,6 +54,9 @@ type Server struct {
 	demoServer          *DemoServer              // demo server
 	started             bool                     // 服务是否已经启动
 	stopChan            chan struct{}            // 服务停止通道
+
+	ipBlacklist     map[string]uint64 // ip黑名单列表
+	ipBlacklistLock sync.RWMutex      // ip黑名单列表锁
 }
 
 func New(opts *Options) *Server {
@@ -63,6 +68,7 @@ func New(opts *Options) *Server {
 		timingWheel:      timingwheel.NewTimingWheel(opts.TimingWheelTick, opts.TimingWheelSize),
 		start:            now,
 		stopChan:         make(chan struct{}),
+		ipBlacklist:      map[string]uint64{},
 	}
 
 	gin.SetMode(opts.GinMode)
@@ -160,6 +166,13 @@ func (s *Server) Start() error {
 
 	s.timingWheel.Start()
 
+	s.initIPBlacklist() // 初始化ip黑名单
+
+	// 打印黑名单阻止情况
+	s.Schedule(5*time.Minute, func() {
+		s.printIpBlacklist()
+	})
+
 	if s.opts.Monitor.On {
 		s.monitor.Start()
 		s.monitorServer.Start()
@@ -205,4 +218,55 @@ func (s *Server) Schedule(interval time.Duration, f func()) *timingwheel.Timer {
 	return s.timingWheel.ScheduleFunc(&everyScheduler{
 		Interval: interval,
 	}, f)
+}
+
+func (s *Server) AllowIP(ip string) bool {
+	s.ipBlacklistLock.Lock()
+	defer s.ipBlacklistLock.Unlock()
+	blockCount, ok := s.ipBlacklist[ip]
+	if ok {
+		s.ipBlacklist[ip] = blockCount + 1
+		return false
+	}
+	return true
+}
+
+func (s *Server) AddIPBlacklist(ips []string) {
+	s.ipBlacklistLock.Lock()
+	defer s.ipBlacklistLock.Unlock()
+	for _, ip := range ips {
+		s.ipBlacklist[ip] = 0
+	}
+
+}
+
+func (s *Server) initIPBlacklist() {
+	ips, err := s.store.GetIPBlacklist()
+	if err != nil {
+		s.Error("获取ip黑名单失败！", zap.Error(err))
+		return
+	}
+	s.ipBlacklistLock.Lock()
+	defer s.ipBlacklistLock.Unlock()
+	for _, ip := range ips {
+		s.ipBlacklist[ip] = 0
+	}
+}
+
+func (s *Server) RemoveIPBlacklist(ips []string) {
+	s.ipBlacklistLock.Lock()
+	defer s.ipBlacklistLock.Unlock()
+	for _, ip := range ips {
+		delete(s.ipBlacklist, ip)
+	}
+}
+
+func (s *Server) printIpBlacklist() {
+	s.ipBlacklistLock.RLock()
+	defer s.ipBlacklistLock.RUnlock()
+	for ip, count := range s.ipBlacklist {
+		if count > 0 {
+			s.Info(fmt.Sprintf("ip: %s, block count: %d", ip, count))
+		}
+	}
 }
